@@ -38,6 +38,8 @@ mkdir -p %{buildroot}%{_unitdir}
 install -m644 usr/lib/systemd/system/hhd@.service %{buildroot}%{_unitdir}/hhd@.service
 
 %files
+%doc readme.md
+%license LICENSE
 %{_bindir}/hhd*
 %{python3_sitelib}/hhd*
 %{_udevrulesdir}/83-hhd.rules
