@@ -166,12 +166,14 @@ class DualSense5Edge(Producer, Consumer):
         self,
         touchpad_method: TouchpadCorrectionType = "crop_end",
         use_bluetooth: bool = True,
+        fake_timestamps: bool = False,
     ) -> None:
         self.available = False
         self.report = None
         self.dev = None
         self.start = 0
         self.use_bluetooth = use_bluetooth
+        self.fake_timestamps = fake_timestamps
         self.touchpad_method: TouchpadCorrectionType = touchpad_method
 
         self.ofs = (
@@ -422,9 +424,14 @@ class DualSense5Edge(Producer, Consumer):
                             )
 
         # Cache
-        # if new_rep == self.report:
-        #     return
+        if new_rep == self.report and not self.fake_timestamps:
+            return
         self.report = new_rep
+
+        if self.fake_timestamps:
+            new_rep[self.ofs + 27 : self.ofs + 31] = int(
+                time.perf_counter_ns() / DS5_EDGE_DELTA_TIME_NS
+            ).to_bytes(8, byteorder="little", signed=False)[:4]
 
         #
         # Send report
