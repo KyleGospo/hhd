@@ -1,12 +1,11 @@
 Name:           hhd
-Version:        {{{ git_dir_version }}}
+Version:        0.1.8
 Release:        1%{?dist}
 Summary:        Handheld Daemon is a project that aims to provide utilities for managing handheld devices
 
 License:        MIT
-URL:            https://github.com/KyleGospo/hhd
-VCS:            {{{ git_dir_vcs }}}
-Source:        	{{{ git_dir_pack }}}     
+URL:            https://github.com/antheas/hhd
+Source:        	https://pypi.python.org/packages/source/h/%{name}/%{name}-%{version}.tar.gz   
 
 BuildArch:      noarch
 BuildRequires:  systemd-rpm-macros
@@ -25,7 +24,7 @@ Requires:       python3-yaml
 Handheld Daemon is a project that aims to provide utilities for managing handheld devices. With features ranging from TDP controls, to controller remappings, and gamescope session management. This is done through a plugin system, and a dbus daemon, which will expose the settings of the plugins in a UI agnostic way.
 
 %prep
-{{{ git_dir_setup_macro }}}
+%autosetup -n %{name}-%{version}
 
 %build
 python3 -m build --wheel --no-isolation
@@ -33,17 +32,14 @@ python3 -m build --wheel --no-isolation
 %install
 python3 -m installer --destdir="%{buildroot}" dist/*.whl
 mkdir -p %{buildroot}%{_udevrulesdir}
-install -m644 usr/lib/udev/rules.d/83-hhd.rules %{buildroot}%{_udevrulesdir}/83-hhd.rules
+install -m644 usr/lib/udev/rules.d/83-%{name}.rules %{buildroot}%{_udevrulesdir}/83-%{name}.rules
 mkdir -p %{buildroot}%{_unitdir}
-install -m644 usr/lib/systemd/system/hhd@.service %{buildroot}%{_unitdir}/hhd@.service
+install -m644 usr/lib/systemd/system/%{name}@.service %{buildroot}%{_unitdir}/%{name}@.service
 
 %files
 %doc readme.md
 %license LICENSE
-%{_bindir}/hhd*
-%{python3_sitelib}/hhd*
-%{_udevrulesdir}/83-hhd.rules
-%{_unitdir}/hhd@.service
-
-%changelog
-{{{ git_dir_changelog }}}
+%{_bindir}/%{name}*
+%{python3_sitelib}/%{name}*
+%{_udevrulesdir}/83-%{name}.rules
+%{_unitdir}/%{name}@.service
