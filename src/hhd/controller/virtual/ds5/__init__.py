@@ -203,6 +203,7 @@ class DualSense5Edge(Producer, Consumer):
 
         self.state: dict = defaultdict(lambda: 0)
         self.rumble = False
+        self.touchpad_touch = False
         self.start = time.perf_counter_ns()
         self.fd = self.dev.open()
         return [self.fd]
@@ -270,7 +271,16 @@ class DualSense5Edge(Producer, Consumer):
                     if self.use_bluetooth:
                         # skip seq_tag, tag sent by bluetooth report
                         # rest is the same
-                        rep = rep[0:1] + rep[2:]
+
+                        # If the first byte is the sequence byte, it will be
+                        # from 0x00 to 0xF0. Otherwise, for sdl that does not
+                        # have it it will be 0x02.
+                        # Only the kernel appends the sequence byte
+                        # SDL does not
+                        if rep[1] == 0x02:
+                            rep = rep[0:1] + rep[2:]
+                        else:
+                            rep = rep[0:1] + rep[3:]
 
                     if rep[2] & 4:  # DS_OUTPUT_VALID_FLAG1_LIGHTBAR_CONTROL_ENABLE
                         # Led data is being set
@@ -280,10 +290,7 @@ class DualSense5Edge(Producer, Consumer):
                         green = rep[46]
                         blue = rep[47]
                         if red == 0 and green == 0 and blue == 128:
-                            # Skip playstation driver usb initialization
-                            continue
-                        if red == 64 and green == 0 and blue == 0:
-                            # Skip playstation driver bt initialization
+                            # Skip playstation driver initialization
                             continue
                         if red == 0 and green == 0 and blue == 64:
                             # Skip SDL led initialization
@@ -322,7 +329,7 @@ class DualSense5Edge(Producer, Consumer):
                         # )
                         pass
 
-                    if rep[1] & 0x03 == 0x03:
+                    if rep[1] & 0x02:
                         right = rep[3]
                         left = rep[4]
                         out.append(
@@ -404,6 +411,23 @@ class DualSense5Edge(Producer, Consumer):
                 case "button":
                     if ev["code"] in self.btn_map:
                         set_button(new_rep, self.btn_map[ev["code"]], ev["value"])
+
+                    # Fix touchpad click requiring touch, and also activate second
+                    # button for right click
+                    if ev["code"] == "touchpad_touch":
+                        self.touchpad_touch = ev["value"]
+                    if ev["code"] == "touchpad_click":
+                        set_button(
+                            new_rep,
+                            self.btn_map["touchpad_touch"],
+                            ev["value"] or self.touchpad_touch,
+                        )
+                        set_button(
+                            new_rep,
+                            self.btn_map["touchpad_touch2"],
+                            ev["value"],
+                        )
+
                 case "configuration":
                     match ev["code"]:
                         case "touchpad_aspect_ratio":

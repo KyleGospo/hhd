@@ -196,7 +196,7 @@ class Multiplexer:
         self.share_to_qam = share_to_qam
 
         self.state = {}
-        self.queue: list[tuple[Event, int]] = []
+        self.queue: list[tuple[Event, float]] = []
 
         assert touchpad is None, "touchpad rewiring not supported yet"
 
@@ -318,6 +318,11 @@ class Multiplexer:
                             )
 
                         # append A after QAM_DELAY s
+
+                    # TODO: Make it a proper config option
+                    # Remap M2 to the mute button
+                    if ev["code"] == "extra_r3":
+                        ev["code"] = "share"
                 case "led":
                     if self.led == "left_to_main" and ev["code"] == "left":
                         out.append({**ev, "code": "main"})
@@ -345,8 +350,8 @@ class Multiplexer:
                             "type": "configuration",
                             "code": "battery",
                             "value": min(
-                                self.state.get("battery_left", 0),
-                                self.state.get("battery_right", 0),
+                                self.state.get("battery_left", 100),
+                                self.state.get("battery_right", 100),
                             ),
                         }
                     )
