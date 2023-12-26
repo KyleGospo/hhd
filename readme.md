@@ -25,16 +25,23 @@ depending on the game.
     - Short press makes steam deck sleep
     - Long press opens steam power menu
 
+*Upcoming v0.2 Features*
+- Hiding the original xbox controller!
+- HTTP based Configuration
+  - Right now, functionality can be tweaked through config files
+    - Not ideal for a portable device
+  - An HTTP daemon and a plugin system will allow safe, polkit based
+    access to hardware configuration.
+  - Profiles will allow swapping configuration per game.
+
 *Planned Features (in that order)*:
+- Evdev device emulation
+  - No weird glyphs
+  - But partial gyro and back button support
 - Steam Deck controller emulation
   - No weird glyphs
 - TDP Plugin (Legion Go)
   - Will provide parity with Legion Space, hardware is already reverse engineered
-- d-Bus based Configuration
-  - Right now, functionality can be tweaked through config files
-    - Not ideal for a portable device
-  - A d-Bus daemon and a plugin system will allow safe, polkit based
-    access to hardware configuration.
 - High-end Over/Downclocking Utility for Ryzen processors
   - By hooking into the manufacturer ACPI API of the Ryzen platform,
     it will expose all TDP related parameters manufacturers have access to
@@ -44,7 +51,6 @@ depending on the game.
     - Safer, as it is the method used by manufacturers
         (provided you stay within limits).
   - May require DSDT patch on boot, TBD.
-
 
 ## Installation Instructions
 You can install the latest stable version of `hhd` from AUR or PiPy.
@@ -98,7 +104,7 @@ cd ~/.local/share/hhd
 
 python -m venv venv
 source venv/bin/activate
-pip install hhd
+pip install hhd setuptools
 
 # Install udev rules and create a service file
 sudo curl https://raw.githubusercontent.com/antheas/hhd/master/usr/lib/udev/rules.d/83-hhd.rules -o /etc/udev/rules.d/83-hhd.rules 
@@ -200,7 +206,82 @@ sudo systemctl restart hhd@$(whoami)
 sudo systemctl restart hhd_local@$(whoami)
 ```
 
-## Quirks
+## Frequently Asked Questions (FAQ)
+### What does the current version of HHD do?
+The current version of HHD maps the x-input mode of the legion go controllers to
+a Dualsense 5 Edge controller, which allows using all of the controller functions.
+In addition, it adds support for the steam powerbutton action, so you get a wink
+when going to sleep mode.
+When the controllers are not in x-input mode, HHD adds a shortcuts device so
+that combos such as Steam and QAM keep working.
+
+### I'm seeing three X-BOX controllers, regardless of whether HHD is running
+Currently, there is a bug with the Nobara kernels that adds 2 extra random
+Steam Controllers.
+These controllers appear in the system as X-BOX/Xpad controllers.
+This is unrelated to HHD.
+
+### Steam reports a Legion Controller and a Shortcuts controller instead of a DS5
+The Legion controllers have multiple modes (namely x-input, d-input, dual d-input,
+and FPS).
+HHD only remaps the x-input mode of the controllers.
+You can cycle through the modes with Legion L + RB.
+
+X-input and d-input refer to the protocol the controllers operate in.
+Both are legacy protocols introduced in the mid-2000s and are included for hardware
+support reasons.
+
+X-input is a USB controller protocol introduced with the xbox 360 controller and 
+is widely supported.
+Direct input is a competing protocol that works based on USB HID.
+Both work the same.
+The only difference between them is that d-input has discrete triggers for some
+reason, and some games read the button order wrong.
+
+X-input requires a special udev rule to work, see below.
+
+### Other gamepad modes
+HHD remaps the xinput mode of the Legion Go controllers into a DS5 controller.
+All other modes function as normal.
+In addition, HHD adds a shortcuts device that allows remapping the back buttons
+and all Legion L, R + button combinations into shortcuts that will work accross
+all modes.
+
+### I can not see any controllers before or after installing HHD
+You are in a distro that does not officially support Legion Go.
+One of the fixes that is included in those distros is a udev rule that binds
+the xpad driver to the controllers.
+This is expected to be included in a future linux kernel so it is not included
+by default by HHD.
+
+Under `/etc/udev/rules.d/95-hhd.rules` add the following:
+```bash
+# Enable XPAD for the legion go controllers
+ATTRS{idVendor}=="17ef", ATTRS{idProduct}=="6182", RUN+="/sbin/modprobe xpad" RUN+="/bin/sh -c 'echo 17ef 6182 > /sys/bus/usb/drivers/xpad/new_id'"
+```
+
+You will see the following in the HHD logs (`sudo systemctl status hhd@$(whoami)`)
+if you are missing the xpad rule.
+```
+              ERROR    Device with the following not found:                                                                                                                          evdev.py:122
+                       Vendor ID: ['17ef']
+                       Product ID: ['6182']
+                       Name: ['Generic X-Box pad']
+```
+
+### I can see the original controller and that is causing issues in X
+Hiding the original controller is a complex process, so it was skipped for the
+v0.1.* versions of HHD.
+However, it is implemented properly in v0.2 which will be released soon.
+Some emulators select the original controller as controller 1, which might
+cause issues.
+If this is the case, wait for version 2.
+
+### Yuzu does not work with the DS5 controller
+See above.
+Use yuzu controller settings to select the dual sense controller and disable 
+steam input.
+
 ### Playstation Driver
 There is a small touchpad issue with the playstation driver loaded.
 Where a cursor might appear when using the touchpad in steam input.
@@ -215,13 +296,6 @@ a correct gamepad profile and will not work either.
 ```bash
 sudo curl https://raw.githubusercontent.com/antheas/hhd/master/usr/lib/modprobe.d/hhd.conf -o /etc/udev/modprobe.d/hhd.conf
 ```
-
-### Other gamepad modes
-HHD remaps the xinput mode of the Legion Go controllers into a DS5 controller.
-All other modes function as normal.
-In addition, HHD adds a shortcuts device that allows remapping the back buttons
-and all Legion L, R + button combinations into shortcuts that will work accross
-all modes.
 
 ### Freezing Gyro
 The gyro used for the DS5 controller is found in the display.
@@ -240,10 +314,27 @@ By default, the accelerometer is disabled for this reason.
 You need to set both `gyro` and `gyro-fix` to `False` in the config to disable
 gyro support.
 
+### No screen autorotation after install
+HHD includes a udev rule that disables screen autorotation, because it interferes
+with gyro support.
+This is only done specifically to the accelerometer of the legion go.
+If you do not need gyro, you can do the local install and modify
+`83-hhd.rules` to remove that rule.
+The gyro will freeze and will be unusable after that.
+
+### Touchpad right click does not work in desktop
+HHD remaps the touchpad of the legion go to the DS5 touchpad.
+The playstation driver does not support right clicking.
+Switch to d-input to enable the touchpad when you're in the desktop.
+Next HHD version includes an option for disabling touchpad emulation.
+
 ### HandyGCCS
 HHD replicates all functionality of HandyGCCS for the Legion Go, so it is not
 required. In addition, it will break HHD by hiding the controller.
 You should uninstall it with `sudo pacman -R handygccs-git`.
+
+You will see the following in the HHD logs (`sudo systemctl status hhd@$(whoami)`) 
+if handygccs is enabled.
 ```
               ERROR    Device with the following not found:                                                                                                                          evdev.py:122
                        Vendor ID: ['17ef']

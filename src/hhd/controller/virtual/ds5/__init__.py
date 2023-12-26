@@ -59,6 +59,7 @@ TouchpadCorrectionType = Literal[
     "contain_start",
     "contain_end",
     "contain_center",
+    "disabled",
 ]
 
 
@@ -154,7 +155,7 @@ def correct_touchpad(
                 return TouchpadCorrection(
                     x_mult=width, y_mult=height, x_clamp=(bound, 1)
                 )
-        case "stretch":
+        case "stretch" | "disabled":
             return TouchpadCorrection(x_mult=width, y_mult=height)
 
     logger.error(f"Touchpad correction method '{method}' not found.")
@@ -241,11 +242,11 @@ class DualSense5Edge(Producer, Consumer):
                             rep = sign_crc32_append(rep, DS5_FEATURE_CRC32_SEED)
                         self.dev.send_get_report_reply(ev["id"], 0, rep)
                     else:
-                        logger.warn(
+                        logger.warning(
                             f"DS5: Received get_report with the id (uknown): {ev['rnum']}"
                         )
                 case "set_report":
-                    logger.warn(
+                    logger.warning(
                         f"DS5: Received set_report with the id (uknown): {ev['rnum']}"
                     )
                 case "output":
@@ -261,7 +262,7 @@ class DualSense5Edge(Producer, Consumer):
                         invalid = True
 
                     if invalid:
-                        logger.warn(
+                        logger.warning(
                             f"DS5: Received uknown output report with the following data:\n{ev['report']}: {ev['data'].hex()}"
                         )
                         continue
@@ -294,6 +295,9 @@ class DualSense5Edge(Producer, Consumer):
                             continue
                         if red == 0 and green == 0 and blue == 64:
                             # Skip SDL led initialization
+                            continue
+                        if red == 64 and green == 0 and blue == 0:
+                            # Skip rare SDL led initialization that is offset
                             continue
                         logger.info(f"Changing leds to RGB: {red} {green} {blue}")
                         out.append(
@@ -352,7 +356,7 @@ class DualSense5Edge(Producer, Consumer):
                             }
                         )
                 case _:
-                    logger.info(f"Received unhandled report:\n{ev}")
+                    logger.debug(f"Received unhandled report:\n{ev}")
         return out
 
     def consume(self, events: Sequence[Event]):

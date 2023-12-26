@@ -1,0 +1,35 @@
+http:
+  type: container
+  tags: [hhd-http]
+  title: REST API Configuration (BETA)
+  hint: >-
+    Settings for configuring the http endpoint of HHD.
+
+  children:
+    enable:
+      type: bool
+      title: Enable REST API.
+      hint: >-
+        Enables the rest API of Handheld Daemon
+      default: False
+    port:
+      type: integer
+      title: REST API Port
+      hint: >-
+        Which port should the REST API be on?
+      min: 1024
+      max: 49151
+      default: 5335
+    localhost:
+      type: bool
+      title: Limit Access to localhost
+      hint: >-
+        Sets the API target to '127.0.0.1' instead '0.0.0.0'.
+      default: True
+    token:
+      type: bool
+      title: Use Security token
+      hint: >-
+        Generates a security token in `~/.config/hhd/token` that is required for
+        authentication.
+      default: True

@@ -1,14 +1,19 @@
+import glob
 import logging
+import os
 import re
 import select
-from typing import Mapping, Sequence, TypeVar, cast
+import stat
+import subprocess
+from typing import Mapping, Sequence, TypeVar, cast, Collection
 
 import evdev
-from evdev import ff, ecodes
+from evdev import ecodes, ff
 
-from hhd.controller import Axis, Button, Event, Producer, Consumer
+from hhd.controller import Axis, Button, Consumer, Event, Producer
 from hhd.controller.base import Event
 from hhd.controller.lib.common import hexify, matches_patterns
+from hhd.controller.lib.hide import hide_gamepad, unhide_gamepad
 
 from ..const import AbsAxis, GamepadButton, KeyboardButton
 
@@ -29,6 +34,8 @@ def to_map(b: dict[A, Sequence[int]]) -> dict[int, A]:
             out[s] = btn
     return out
 
+
+CapabilityMatch = Mapping[int, Collection[int]]
 
 XBOX_BUTTON_MAP: dict[int, GamepadButton] = to_map(
     {
@@ -70,20 +77,45 @@ XBOX_AXIS_MAP: dict[int, AbsAxis] = to_map(
 )
 
 
+def list_joysticks(input_device_dir="/dev/input"):
+    return glob.glob(f"{input_device_dir}/js*")
+
+
+def get_path(ev: str):
+    path = None
+    for line in subprocess.run(
+        ["udevadm", "info", "-n", ev], capture_output=True
+    ).stdout.splitlines():
+        if line.startswith(b"P: "):
+            path = line[3 : -len(ev[ev.rindex("/") :])]
+            break
+    return path
+
+
+def find_joystick(ev: str):
+    path = get_path(ev)
+    for other in list_joysticks():
+        if path == get_path(other):
+            return other
+
+
 class GenericGamepadEvdev(Producer, Consumer):
     def __init__(
         self,
         vid: Sequence[int],
         pid: Sequence[int],
-        name: Sequence[str | re.Pattern],
+        name: Sequence[str | re.Pattern] = "",
+        capabilities: CapabilityMatch = {},
         btn_map: Mapping[int, Button] = XBOX_BUTTON_MAP,
         axis_map: Mapping[int, Axis] = XBOX_AXIS_MAP,
         aspect_ratio: float | None = None,
         required: bool = True,
+        hide: bool = False,
     ) -> None:
         self.vid = vid
         self.pid = pid
         self.name = name
+        self.capabilities = capabilities
 
         self.btn_map = btn_map
         self.axis_map = axis_map
@@ -92,6 +124,8 @@ class GenericGamepadEvdev(Producer, Consumer):
         self.dev: evdev.InputDevice | None = None
         self.fd = 0
         self.required = required
+        self.hide = hide
+        self.hidden = False
 
     def open(self) -> Sequence[int]:
         for d in evdev.list_devices():
@@ -102,6 +136,31 @@ class GenericGamepadEvdev(Producer, Consumer):
                 continue
             if not matches_patterns(dev.name, self.name):
                 continue
+            if self.capabilities:
+                matches = True
+                dev_cap = cast(dict[int, Sequence[int]], dev.capabilities())
+                for cap_id, caps in self.capabilities.items():
+                    if cap_id not in dev_cap:
+                        matches = False
+                        break
+                    for cap in caps:
+                        if cap not in dev_cap[cap_id]:
+                            matches = False
+                        break
+                if not matches:
+                    continue
+
+            if self.hide:
+                # Check we are root
+                if not os.getuid():
+                    self.hidden = hide_gamepad(dev.path)
+                    if not self.hidden:
+                        logger.warning(f"Could not hide device:\n{dev}")
+                else:
+                    logger.warning(
+                        f"Not running as root, device '{dev.name}' could not be hid."
+                    )
+
             self.dev = dev
             self.dev.grab()
             self.ranges = {
@@ -119,6 +178,8 @@ class GenericGamepadEvdev(Producer, Consumer):
             err += f"Product ID: {hexify(self.pid)}\n"
         if self.name:
             err += f"Name: {self.name}\n"
+        if self.capabilities:
+            err += f"Capabilities: {self.capabilities}\n"
         logger.error(err)
         if self.required:
             raise RuntimeError()
@@ -126,7 +187,10 @@ class GenericGamepadEvdev(Producer, Consumer):
 
     def close(self, exit: bool) -> bool:
         if self.dev:
+            if self.hidden:
+                unhide_gamepad(self.dev.path)
             self.dev.close()
+            self.dev = None
             self.fd = 0
         return True
 
