@@ -3,11 +3,19 @@ import logging
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Condition, Thread
 from typing import Any, Mapping
+
 from urllib.parse import parse_qs, urlparse
 
-from .plugins import Config, Emitter, HHDSettings
+from hhd.plugins import Config, Emitter, HHDSettings
 
 logger = logging.getLogger(__name__)
+
+
+def sanitize_name(n: str):
+    import re
+
+    return re.sub(r"[^ a-zA-Z0-9]+", "", n)
+
 
 STANDARD_HEADERS = {
     "Access-Control-Allow-Origin": "*",
@@ -83,12 +91,12 @@ class RestHandler(BaseHTTPRequestHandler):
         self.set_response(200, STANDARD_HEADERS)
 
     def send_not_found(self, error: str):
-        self.set_response(400, ERROR_HEADERS)
+        self.set_response(404, ERROR_HEADERS)
         self.wfile.write(b"Handheld Daemon Error (404, invalid endpoint):\n")
         self.wfile.write(error.encode())
 
     def send_error(self, error: str):
-        self.set_response(404, ERROR_HEADERS)
+        self.set_response(400, ERROR_HEADERS)
         self.wfile.write(b"Handheld Daemon Error:\n")
         self.wfile.write(error.encode())
 
@@ -107,17 +115,17 @@ class RestHandler(BaseHTTPRequestHandler):
                 case "get":
                     if "profile" not in params:
                         return self.send_error(f"Profile not specified")
-                    profile = params["profile"][0]
+                    profile = sanitize_name(params["profile"][0])
                     if profile not in self.profiles:
                         return self.send_error(f"Profile '{profile}' not found.")
                     self.send_json(self.profiles[profile].conf)
                 case "set":
                     if "profile" not in params:
                         return self.send_error(f"Profile not specified")
-                    if not content:
+                    if not content or not isinstance(content, Mapping):
                         return self.send_error(f"Data for the profile not sent.")
 
-                    profile = params["profile"][0]
+                    profile = sanitize_name(params["profile"][0])
                     self.emit(
                         {"type": "profile", "name": profile, "config": Config(content)}
                     )
@@ -129,11 +137,26 @@ class RestHandler(BaseHTTPRequestHandler):
                         self.send_json(self.profiles[profile].conf)
                     else:
                         self.send_error(f"Applied profile not found (race condition?).")
+                case "del":
+                    if "profile" not in params:
+                        return self.send_error(f"Profile not specified")
+
+                    profile = sanitize_name(params["profile"][0])
+                    if profile not in self.profiles:
+                        return self.send_error(f"Profile '{profile}' not found.")
+                    self.emit({"type": "profile", "name": profile, "config": None})
+                    # Wait for the profile to be processed
+                    self.cond.wait()
+
+                    if profile in self.profiles:
+                        self.send_error(f"Applied profile not found (race condition?).")
+                    else:
+                        self.set_response_ok()
                 case "apply":
                     if "profile" not in params:
                         return self.send_error(f"Profile not specified")
 
-                    profiles = params["profile"]
+                    profiles = [sanitize_name(p) for p in params["profile"]]
                     for p in profiles:
                         if p not in self.profiles:
                             return self.send_error(f"Profile '{p}' not found.")
@@ -143,24 +166,31 @@ class RestHandler(BaseHTTPRequestHandler):
                     self.cond.wait()
                     # Return the profile
                     self.send_json(self.conf.conf)
+                case other:
+                    self.send_not_found(f"Command 'profile/{other}' not supported.")
 
     def v1_endpoint(self, content: Any | None):
         segments, params = parse_path(self.path)
         if not segments:
             return self.send_not_found(f"Empty path.")
 
-        if segments[0] != "v1":
+        if segments[0] != "api":
             return self.send_not_found(
-                f"Only v1 endpoint is supported by this version of hhd (requested '{segments[0]}')."
+                f"Only the API endpoint ('/api/v1') is supported for now."
             )
 
-        if len(segments) == 1:
+        if len(segments) < 2 or segments[1] != "v1":
+            return self.send_not_found(
+                f"Only v1 endpoint is supported by this version of hhd ('/api/v1')."
+            )
+
+        if len(segments) == 2:
             return self.send_not_found(f"No command provided")
 
-        command = segments[1].lower()
+        command = segments[2].lower()
         match command:
             case "profile":
-                self.handle_profile(segments[2:], params, content)
+                self.handle_profile(segments[3:], params, content)
             case "settings":
                 self.set_response_ok()
                 with self.cond:
@@ -169,9 +199,15 @@ class RestHandler(BaseHTTPRequestHandler):
                 self.set_response_ok()
                 with self.cond:
                     if content:
+                        if not isinstance(content, Mapping):
+                            return self.send_error(
+                                f"State content should be a dictionary."
+                            )
                         self.emit({"type": "state", "config": Config(content)})
                         self.cond.wait()
                     self.wfile.write(json.dumps(self.conf.conf).encode())
+            case "version":
+                self.send_json({"version": 1})
             case other:
                 self.send_not_found(f"Command '{other}' not supported.")
 

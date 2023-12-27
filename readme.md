@@ -3,11 +3,9 @@ Handheld Daemon is a project that aims to provide utilities for managing handhel
 devices.
 With features ranging from TDP controls, to controller remappings, and gamescope 
 session management.
-This is done through a plugin system, and a dbus daemon, which will expose the
-settings of the plugins in a UI agnostic way.
+This will be done through a plugin system and an HTTP(/d-bus?) daemon, which will
+expose the settings of the plugins in a UI agnostic way.
 
-For the time being, the daemon is not d-bus based, and relies on static configuration
-stored on `~/.config/hhd`.
 The current version contains a fully functional Dual Sense 5 Edge emulator for
 the Legion Go (including touchpad, gyro, and LED support).
 It is the aim of this project to provide generic hid-based emulators for most
@@ -24,15 +22,11 @@ depending on the game.
 - Power Button plugin
     - Short press makes steam deck sleep
     - Long press opens steam power menu
-
-*Upcoming v0.2 Features*
 - Hiding the original xbox controller!
 - HTTP based Configuration
-  - Right now, functionality can be tweaked through config files
-    - Not ideal for a portable device
-  - An HTTP daemon and a plugin system will allow safe, polkit based
-    access to hardware configuration.
-  - Profiles will allow swapping configuration per game.
+  - Allows configuring HHD over Electron/React apps.
+  - Token based authentication and limited to localhost.
+  - With will allow swapping configuration per game.
 
 *Planned Features (in that order)*:
 - Evdev device emulation
@@ -50,7 +44,6 @@ depending on the game.
     - No memory-relaxed requirement
     - Safer, as it is the method used by manufacturers
         (provided you stay within limits).
-  - May require DSDT patch on boot, TBD.
 
 ## Installation Instructions
 You can install the latest stable version of `hhd` from AUR or PiPy.
@@ -104,7 +97,7 @@ cd ~/.local/share/hhd
 
 python -m venv venv
 source venv/bin/activate
-pip install hhd setuptools
+pip install hhd
 
 # Install udev rules and create a service file
 sudo curl https://raw.githubusercontent.com/antheas/hhd/master/usr/lib/udev/rules.d/83-hhd.rules -o /etc/udev/rules.d/83-hhd.rules 
@@ -192,19 +185,23 @@ user dir, which is the following:
 ~/.config/hhd
 ```
 
-Configuration for plugins will appear in the plugins directory.
-Only the legion controller plugin has configuration options for now.
+The global configuration for hhd is found in:
 ```bash
-~/.config/hhd/plugins
+~/.config/hhd/state.yml
+```
+This will allow you to set sticky hhd configuration options, such as emulation
+mode.
+Once set, hhd will hot-reload the configurations.
+
+HHD allows you to create profiles, that set multiple configurations together,
+through the profile directory:
+```bash
+~/.config/hhd/profiles
 ```
 
-Restart `hhd` to reload the configurations afterwards.
-```bash
-# Arch
-sudo systemctl restart hhd@$(whoami)
-# Local install
-sudo systemctl restart hhd_local@$(whoami)
-```
+Right now, these profiles can only be set with the experimental HTTP API,
+which will be called through a GUI.
+This API is disabled by default in the current version of HHD.
 
 ## Frequently Asked Questions (FAQ)
 ### What does the current version of HHD do?
@@ -326,7 +323,7 @@ The gyro will freeze and will be unusable after that.
 HHD remaps the touchpad of the legion go to the DS5 touchpad.
 The playstation driver does not support right clicking.
 Switch to d-input to enable the touchpad when you're in the desktop.
-Next HHD version includes an option for disabling touchpad emulation.
+You can also disable touchpad emulation in the config.
 
 ### HandyGCCS
 HHD replicates all functionality of HandyGCCS for the Legion Go, so it is not
@@ -341,6 +338,19 @@ if handygccs is enabled.
                        Product ID: ['6182']
                        Name: ['Generic X-Box pad']
 ```
+
+### Buttons are mapped incorrectly
+Buttons mapped in legion space will carry over to linux.
+This includes both back buttons and legion swap.
+You can reset each controller by holding Legion R + RT + RB, Legion L + LT + LB.
+However, we do not know how to reset the legion space legion button swap at
+this point, so you need to use Legion Space for that.
+
+Another set of obscure issues occur depending on how apps hook to the DS5 controller.
+If the playstation driver is not active, the linux kernel creates an evdev node
+with incorrect mappings (right trigger becomes a stick, etc).
+If the app hooks directly into the hidraw of the controller, it works properly.
+If it uses the evdev device its incorrect.
 
 ## Contributing
 You should install from source if you aim to contribute or want to pull from master.
@@ -373,6 +383,4 @@ sudo hhd --user $(whoami)
 ```
 
 ## License
-An open source license will be chosen in the following days.
-It will probably be the Apache license, so if that affects your use case reach
-out for feedback.
+This codebase is MIT licensed and will always have a copy-left license.

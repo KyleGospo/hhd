@@ -25,7 +25,7 @@ class ButtonSetting(TypedDict):
     type: Literal["event"]
     family: Sequence[str]
     title: str
-    hint: str
+    hint: str | None
 
     default: bool | None
 
@@ -36,7 +36,7 @@ class BooleanSetting(TypedDict):
     type: Literal["bool"]
     family: Sequence[str]
     title: str
-    hint: str
+    hint: str | None
 
     default: bool | None
 
@@ -47,7 +47,7 @@ class MultipleSetting(TypedDict):
     type: Literal["multiple"]
     family: Sequence[str]
     title: str
-    hint: str
+    hint: str | None
 
     options: Mapping[str, str]
     default: str | None
@@ -59,7 +59,7 @@ class DiscreteSetting(TypedDict):
     type: Literal["discrete"]
     family: Sequence[str]
     title: str
-    hint: str
+    hint: str | None
 
     options: Sequence[int | float]
     default: int | float | None
@@ -71,7 +71,7 @@ class NumericalSetting(TypedDict):
     type: Literal["float"]
     family: Sequence[str]
     title: str
-    hint: str
+    hint: str | None
 
     min: float | None
     max: float | None
@@ -81,10 +81,10 @@ class NumericalSetting(TypedDict):
 class IntegerSetting(TypedDict):
     """Floating numerical option."""
 
-    type: Literal["integer"]
+    type: Literal["int"]
     family: Sequence[str]
     title: str
-    hint: str
+    hint: str | None
 
     min: int | None
     max: int | None
@@ -97,7 +97,7 @@ class ColorSetting(TypedDict):
     type: Literal["color"]
     family: Sequence[str]
     title: str
-    hint: str
+    hint: str | None
 
     default: Mapping | None
 
@@ -123,7 +123,7 @@ class Container(TypedDict):
     type: Literal["container"]
     family: Sequence[str]
     title: str
-    hint: str
+    hint: str | None
 
     children: MutableMapping[str, "Setting | Container | Mode"]
 
@@ -134,7 +134,7 @@ class Mode(TypedDict):
     type: Literal["mode"]
     family: Sequence[str]
     title: str
-    hint: str
+    hint: str | None
 
     modes: MutableMapping[str, Container]
     default: str | None
@@ -223,15 +223,20 @@ def fill_in_defaults(s: Setting | Container | Mode):
     s = copy(s)
     s["family"] = s.get("family", [])
     s["title"] = s.get("title", "")
-    s["hint"] = s.get("hint", "")
+    s["hint"] = s.get("hint", None)
     if s["type"] != "container":
         s["default"] = s.get("default", None)
 
     match s["type"]:
         case "container":
-            s["children"] = s.get("children", [])
+            s["children"] = {
+                k: fill_in_defaults(v) for k, v in s.get("children", {}).items()
+            }
         case "mode":
-            s["modes"] = s.get("modes", {})
+            s["modes"] = {
+                k: cast(Container, fill_in_defaults(v))
+                for k, v in s.get("modes", {}).items()
+            }
         case "multiple":
             s["options"] = s.get("options", {})
         case "discrete":
@@ -251,7 +256,7 @@ def merge_reduce(
     match a["type"]:
         case "container":
             out = cast(Container, dict(b))
-            new_children = dict(a["children"])
+            new_children = dict(a.get("children", {}))
             for k, v in b.items():
                 if k in out:
                     out[k] = merge_reduce(out[k], b[k])
@@ -261,7 +266,7 @@ def merge_reduce(
             return fill_in_defaults(out)
         case "mode":
             out = cast(Mode, dict(b))
-            new_children = dict(a["modes"])
+            new_children = dict(a.get("modes", {}))
             for k, v in b.items():
                 if k in out:
                     out[k] = merge_reduce(out[k], b[k])
@@ -274,29 +279,30 @@ def merge_reduce(
 
 
 def merge_reduce_sec(a: Section, b: Section):
-    out = dict(a)
+    out = {k: cast(Container, fill_in_defaults(v)) for k, v in a.items()}
     for k, v in b.items():
         if k in out:
-            out[k] = cast(Container, merge_reduce(out[k], b[k]))
+            out[k] = cast(Container, merge_reduce(out[k], v))
         else:
-            out[k] = v
+            out[k] = cast(Container, fill_in_defaults(v))
 
     return out
 
 
 def merge_reduce_secs(a: HHDSettings, b: HHDSettings):
-    out = dict(a)
+    out = {k: merge_reduce_sec({}, v) for k, v in a.items()}
     for k, v in b.items():
-        if k in out:
-            out[k] = merge_reduce_sec(out[k], b[k])
-        else:
-            out[k] = v
+        out[k] = merge_reduce_sec(out.get(k, {}), v)
 
     return out
 
 
 def merge_settings(sets: Sequence[HHDSettings]):
-    return reduce(merge_reduce_secs, sets)
+    if not sets:
+        return {}
+    if len(sets) > 1:
+        return reduce(merge_reduce_secs, sets)
+    return merge_reduce_secs({}, sets[0])
 
 
 def generate_desc(s: Setting | Container | Mode):
@@ -467,25 +473,30 @@ def dump_settings(
 def save_state_yaml(fn: str, set: HHDSettings, conf: Config):
     import yaml
 
-    if conf.get("version", None) == get_settings_hash(set) and not conf.updated:
+    shash = get_settings_hash(set)
+    if conf.get("version", None) == shash and not conf.updated:
         return False
 
+    conf["version"] = shash
     with open(fn, "w") as f:
         f.write(dump_comment(set, STATE_HEADER))
         yaml.safe_dump(
             dump_settings(set, conf, "default"), f, width=85, sort_keys=False
         )
+
     return True
 
 
 def save_profile_yaml(fn: str, set: HHDSettings, conf: Config | None = None):
     import yaml
 
+    shash = get_settings_hash(set)
     if conf is None:
         conf = Config({})
-    elif conf.get("version", None) == get_settings_hash(set) and not conf.updated:
+    elif conf.get("version", None) == shash and not conf.updated:
         return False
 
+    conf["version"] = shash
     with open(fn, "w") as f:
         f.write(dump_comment(set, PROFILE_HEADER))
         yaml.safe_dump(dump_settings(set, conf, "unset"), f, width=85, sort_keys=False)

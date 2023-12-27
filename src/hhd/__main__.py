@@ -77,6 +77,23 @@ def notifier(ev: TEvent, cond: Condition):
     return _inner
 
 
+def print_token(ctx):
+    token_fn = expanduser(join(CONFIG_DIR, "token"), ctx)
+
+    try:
+        with open(token_fn, "r") as f:
+            token = f.read().strip()
+
+        logger.info(f'Current HHD token (for user "{ctx.name}") is: "{token}"')
+    except Exception as e:
+        logger.error(f"Token not found or could not be read, error:\n{e}")
+        logger.info(
+            "Enable the http endpoint to generate a token automatically.\n"
+            + "Or place it under '~/.config/hhd/token' manually.\n"
+            + "'chown 600 ~/.config/hhd/token' for security reasons!"
+        )
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="HHD: Handheld Daemon main interface.",
@@ -88,6 +105,12 @@ def main():
         default=None,
         help="The user whose home directory will be used to store the files (~/.config/hhd).",
         dest="user",
+    )
+    parser.add_argument(
+        "command",
+        nargs="*",
+        default=[],
+        help="The command to run. If empty, run as daemon. Right now, only the command token is supported.",
     )
     args = parser.parse_args()
     user = args.user
@@ -109,6 +132,13 @@ def main():
     try:
         set_log_plugin("main")
         setup_logger(join(CONFIG_DIR, "log"), ctx=ctx)
+
+        if args.command:
+            if args.command[0] == "token":
+                print_token(ctx)
+                return
+            else:
+                logger.error(f"Command '{args.command[0]}' is unknown. Ignoring...")
 
         for autodetect in pkg_resources.iter_entry_points("hhd.plugins"):
             detectors[autodetect.name] = autodetect.resolve()
@@ -161,7 +191,7 @@ def main():
 
         # Monitor config files for changes
         should_initialize = TEvent()
-        should_initialize.set()
+        initial_run = True
         should_exit = TEvent()
         signal.signal(signal.SIGPOLL, notifier(should_initialize, cond))
         signal.signal(signal.SIGINT, notifier(should_exit, cond))
@@ -173,7 +203,11 @@ def main():
             #
 
             # Initialize if files changed
-            if should_initialize.is_set():
+            if should_initialize.is_set() or initial_run:
+                # wait a bit to allow other processes to save files
+                if not initial_run:
+                    sleep(POLL_DELAY)
+                initial_run = False
                 set_log_plugin("main")
                 logger.info(f"Reloading configuration.")
 
@@ -197,6 +231,8 @@ def main():
                 # Profiles
                 profiles = {}
                 templates = {}
+                os.makedirs(profile_dir, exist_ok=True)
+                fix_perms(profile_dir, ctx)
                 for fn in os.listdir(profile_dir):
                     if not fn.endswith(".yml"):
                         continue
@@ -221,6 +257,7 @@ def main():
                 # Monitor files for changes
                 for fd in cfg_fds:
                     try:
+                        fcntl.fcntl(fd, fcntl.F_NOTIFY, 0)
                         os.close(fd)
                     except Exception:
                         pass
@@ -234,10 +271,13 @@ def main():
                     fcntl.fcntl(
                         fd,
                         fcntl.F_NOTIFY,
-                        fcntl.DN_CREATE | fcntl.DN_DELETE | fcntl.DN_MODIFY,
+                        fcntl.DN_CREATE
+                        | fcntl.DN_DELETE
+                        | fcntl.DN_MODIFY
+                        | fcntl.DN_RENAME
+                        | fcntl.DN_MULTISHOT,
                     )
                     cfg_fds.append(fd)
-                should_initialize.clear()
 
                 # Initialize http server
                 http_cfg = conf["hhd.http"]
@@ -245,7 +285,7 @@ def main():
                     prev_http_cfg = http_cfg
                     if https:
                         https.close()
-                    if http_cfg["enable"]:
+                    if http_cfg["enable"].to(bool):
                         from .http import HHDHTTPServer
 
                         port = http_cfg["port"].to(int)
@@ -254,18 +294,20 @@ def main():
 
                         # Generate security token
                         if use_token:
-                            import hashlib
-                            import random
+                            if not os.path.isfile(token_fn):
+                                import hashlib
+                                import random
 
-                            token = hashlib.sha256(
-                                str(random.random()).encode()
-                            ).hexdigest()
-                            with open(token_fn, "w") as f:
-                                os.chmod(token_fn, 0o600)
-                                f.write(token)
-
-                            sleep(MODIFY_DELAY)
-                            should_initialize.clear()
+                                token = hashlib.sha256(
+                                    str(random.random()).encode()
+                                ).hexdigest()[:12]
+                                with open(token_fn, "w") as f:
+                                    os.chmod(token_fn, 0o600)
+                                    f.write(token)
+                                fix_perms(token_fn, ctx)
+                            else:
+                                with open(token_fn, "r") as f:
+                                    token = f.read().strip()
                         else:
                             token = None
 
@@ -276,6 +318,7 @@ def main():
                         update_log_plugins()
                         set_log_plugin("main")
 
+                should_initialize.clear()
                 logger.info(f"Initialization Complete!")
 
             #
@@ -289,14 +332,17 @@ def main():
                     case "settings":
                         settings_changed = True
                     case "profile":
-                        if ev["name"] in profiles:
-                            profiles[ev["name"]].update(ev["config"].conf)
-                        else:
+                        new_conf = ev["config"]
+                        if new_conf:
                             with lock:
                                 profiles[ev["name"]] = ev["config"]
-                        validate_config(
-                            profiles[ev["name"]], settings, use_defaults=False
-                        )
+                            validate_config(
+                                profiles[ev["name"]], settings, use_defaults=False
+                            )
+                        else:
+                            with lock:
+                                if ev["name"] in profiles:
+                                    del profiles[ev["name"]]
                     case "apply":
                         if ev["name"] in profiles:
                             conf.update(profiles[ev["name"]].conf)
@@ -346,6 +392,20 @@ def main():
                 if save_profile_yaml(fn, settings, prof):
                     fix_perms(fn, ctx)
                     saved = True
+            for prof in os.listdir(profile_dir):
+                if prof.startswith("_") or not prof.endswith(".yml"):
+                    continue
+                name = prof[:-4]
+                if name not in profiles:
+                    fn = join(profile_dir, prof)
+                    try:
+                        new_fn = fn + ".bak"
+                        os.rename(fn, new_fn)
+                        saved = True
+                    except Exception as e:
+                        logger.error(
+                            f"Failed removing profile {name} at:\n{fn}\nWith error:\n{e}"
+                        )
 
             # Add template config
             if save_profile_yaml(
