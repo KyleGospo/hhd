@@ -1,5 +1,5 @@
 Name:           hhd
-Version:        0.1.11
+Version:        0.2.3
 Release:        1%{?dist}
 Summary:        Handheld Daemon is a project that aims to provide utilities for managing handheld devices
 
