@@ -22,6 +22,7 @@ class UInputDevice(Consumer, Producer):
         pid: int = HHD_PID_GAMEPAD,
         name: str = "Handheld Daemon Controller",
         phys: str = "phys-hhd-gamepad",
+        output_timestamps: bool = False,
     ) -> None:
         self.capabilities = capabilities
         self.btn_map = btn_map
@@ -31,9 +32,14 @@ class UInputDevice(Consumer, Producer):
         self.vid = vid
         self.pid = pid
         self.phys = phys
+        self.output_timestamps = output_timestamps
+        self.ofs = 0
+        self.sys_ofs = 0
+
+        self.rumble: Event | None = None
 
     def open(self) -> Sequence[int]:
-        logger.info(f"Opening virtual device '{self.name}'")
+        logger.info(f"Opening virtual device '{self.name}'.")
         self.dev = UInput(
             events=self.capabilities,
             name=self.name,
@@ -60,7 +66,22 @@ class UInputDevice(Consumer, Producer):
                     if ev["code"] in self.axis_map:
                         ax = self.axis_map[ev["code"]]
                         val = int(ax.scale * ev["value"] + ax.offset)
+                        if ax.bounds:
+                            val = min(max(val, ax.bounds[0]), ax.bounds[1])
                         self.dev.write(B("EV_ABS"), ax.id, val)
+                    elif self.output_timestamps and ev["code"] in (
+                        "accel_ts",
+                        "gyro_ts",
+                    ):
+                        # We have timestamps with ns accuracy.
+                        # Evdev expects us accuracy
+                        ts = ev["value"] // 1000
+                        # Use an ofs to avoid overflowing
+                        if ts > self.ofs + 2**30:
+                            self.ofs = ts
+                        ts -= self.ofs
+                        self.dev.write(B("EV_MSC"), B("MSC_TIMESTAMP"), ts)
+                        pass
                 case "button":
                     if ev["code"] in self.btn_map:
                         self.dev.write(
@@ -69,3 +90,55 @@ class UInputDevice(Consumer, Producer):
                             1 if ev["value"] else 0,
                         )
         self.dev.syn()
+
+    def produce(self, fds: Sequence[int]) -> Sequence[Event]:
+        if not self.fd or not self.fd in fds or not self.dev:
+            return []
+
+        out: Sequence[Event] = []
+
+        while can_read(self.fd):
+            for ev in self.dev.read():
+                if ev.type == B("EV_MSC") and ev.code == B("MSC_TIMESTAMP"):
+                    # Skip timestamp feedback
+                    # TODO: Figure out why it feedbacks
+                    pass
+                elif ev.type == B("EV_UINPUT"):
+                    if ev.code == B("UI_FF_UPLOAD"):
+                        # Keep uploaded effect to apply on input
+                        upload = self.dev.begin_upload(ev.value)
+                        if upload.effect.type == B("FF_RUMBLE"):
+                            data = upload.effect.u.ff_rumble_effect
+
+                            self.rumble = {
+                                "type": "rumble",
+                                "code": "main",
+                                "weak_magnitude": data.weak_magnitude / 0xFFFF,
+                                "strong_magnitude": data.strong_magnitude / 0xFFFF,
+                            }
+                        self.dev.end_upload(upload)
+                    elif ev.code == B("UI_FF_ERASE"):
+                        # Ignore erase events
+                        erase = self.dev.begin_erase(ev.value)
+                        erase.retval = 0
+                        ev.end_erase(erase)
+                elif ev.type == B("EV_FF") and ev.value:
+                    if self.rumble:
+                        out.append(self.rumble)
+                    else:
+                        logger.warn(
+                            f"Rumble requested but a rumble effect has not been uploaded."
+                        )
+                elif ev.type == B("EV_FF") and not ev.value:
+                    out.append(
+                        {
+                            "type": "rumble",
+                            "code": "main",
+                            "weak_magnitude": 0,
+                            "strong_magnitude": 0,
+                        }
+                    )
+                else:
+                    logger.info(f"Controller ev received unhandled event:\n{ev}")
+
+        return out
